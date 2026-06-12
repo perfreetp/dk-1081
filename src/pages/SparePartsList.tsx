@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Package, Search, Filter, Plus, AlertTriangle, MapPin, ChevronRight, CheckCircle, Clock } from 'lucide-react';
+import { Package, Search, Plus, AlertTriangle, MapPin, ChevronRight, CheckCircle, Clock, X, Save, AlertCircle } from 'lucide-react';
 import Layout from '../components/layout/Layout';
 import { useSparePartsStore } from '../stores/spareParts';
+import { useAuthStore } from '../stores/auth';
 import { SparePart, SparePartRequestStatus } from '../types';
 
 interface SparePartsListProps {
@@ -24,10 +25,14 @@ const statusLabels: Record<SparePartRequestStatus, string> = {
 
 export default function SparePartsList({ onNavigate }: SparePartsListProps) {
   const { spareParts, fetchSpareParts, requests, fetchRequests, approveRequest, issueRequest, createRequest } = useSparePartsStore();
+  const { hasPermission, user } = useAuthStore();
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedPart, setSelectedPart] = useState<SparePart | null>(null);
   const [requestQuantity, setRequestQuantity] = useState(1);
   const [requestReason, setRequestReason] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
 
   useEffect(() => {
     fetchSpareParts();
@@ -42,29 +47,82 @@ export default function SparePartsList({ onNavigate }: SparePartsListProps) {
   const isLowStock = (part: SparePart) => part.quantity <= part.min_stock;
 
   const handleApprove = async (id: string) => {
-    await approveRequest(id, true);
-  };
-
-  const handleIssue = async (id: string) => {
-    await issueRequest(id);
-  };
-
-  const handleCreateRequest = async () => {
-    if (selectedPart && requestQuantity > 0 && requestReason) {
-      await createRequest({
-        spare_part_id: selectedPart.id,
-        requester_id: '2',
-        quantity: requestQuantity,
-        reason: requestReason,
-      });
-      setSelectedPart(null);
-      setRequestQuantity(1);
-      setRequestReason('');
+    setLoading(true);
+    setError('');
+    try {
+      await approveRequest(id, true);
+      await fetchRequests();
+    } finally {
+      setLoading(false);
     }
   };
 
+  const handleIssue = async (id: string) => {
+    setLoading(true);
+    setError('');
+    try {
+      const result = await issueRequest(id);
+      if (result.success) {
+        setSuccess(result.message);
+        await fetchRequests();
+        await fetchSpareParts();
+      } else {
+        setError(result.message);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCreateRequest = async () => {
+    if (!selectedPart || requestQuantity <= 0 || !requestReason || !user) return;
+    setLoading(true);
+    setError('');
+    try {
+      const result = await createRequest({
+        spare_part_id: selectedPart.id,
+        requester_id: user.id,
+        quantity: requestQuantity,
+        reason: requestReason,
+      });
+      if (result.success) {
+        setSuccess(result.message);
+        await fetchRequests();
+        setSelectedPart(null);
+        setRequestQuantity(1);
+        setRequestReason('');
+      } else {
+        setError(result.message);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const canRequest = hasPermission('request_spare_part');
+  const canApprove = hasPermission('approve_spare_request');
+
   return (
     <Layout currentPage="spare-parts" onNavigate={onNavigate} title="备件领用" subtitle="管理备件库存与领用申请">
+      {error && (
+        <div className="mb-4 p-4 bg-red-50 rounded-lg flex items-center gap-3 text-red-600">
+          <AlertCircle className="w-5 h-5" />
+          <span>{error}</span>
+          <button onClick={() => setError('')} className="ml-auto text-red-400 hover:text-red-600">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+      {success && (
+        <div className="mb-4 p-4 bg-green-50 rounded-lg flex items-center gap-3 text-green-600">
+          <CheckCircle className="w-5 h-5" />
+          <span>{success}</span>
+          <button onClick={() => setSuccess('')} className="ml-auto text-green-400 hover:text-green-600">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-4">
           <div className="relative">
@@ -77,11 +135,17 @@ export default function SparePartsList({ onNavigate }: SparePartsListProps) {
               className="pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm w-64"
             />
           </div>
+          <div className="flex items-center gap-2 text-sm">
+            <AlertTriangle className="w-4 h-4 text-red-500" />
+            <span className="text-red-600">库存预警: {spareParts.filter(isLowStock).length} 项</span>
+          </div>
         </div>
-        <button className="btn btn-primary flex items-center gap-2">
-          <Plus className="w-5 h-5" />
-          入库备件
-        </button>
+        {canApprove && (
+          <button className="btn btn-primary flex items-center gap-2">
+            <Plus className="w-5 h-5" />
+            入库备件
+          </button>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -143,12 +207,19 @@ export default function SparePartsList({ onNavigate }: SparePartsListProps) {
               <p className="text-xs text-gray-400 mt-1">最低库存: {part.min_stock} {part.unit}</p>
             </div>
 
-            <button
-              onClick={() => setSelectedPart(part)}
-              className="w-full mt-4 btn btn-secondary text-sm flex items-center justify-center gap-1"
-            >
-              申请领用 <ChevronRight className="w-4 h-4" />
-            </button>
+            {canRequest && (
+              <button
+                onClick={() => {
+                  setSelectedPart(part);
+                  setRequestQuantity(1);
+                  setRequestReason('');
+                  setError('');
+                }}
+                className="w-full mt-4 btn btn-secondary text-sm flex items-center justify-center gap-1"
+              >
+                申请领用 <ChevronRight className="w-4 h-4" />
+              </button>
+            )}
           </div>
         ))}
       </div>
@@ -186,23 +257,34 @@ export default function SparePartsList({ onNavigate }: SparePartsListProps) {
                     </td>
                     <td className="py-3 px-4">
                       <div className="flex items-center gap-2">
-                        {request.status === 'pending' && (
+                        {request.status === 'pending' && canApprove && (
                           <button
                             onClick={() => handleApprove(request.id)}
-                            className="text-sm text-green-600 hover:text-green-700 flex items-center gap-1"
+                            disabled={loading}
+                            className="text-sm text-green-600 hover:text-green-700 flex items-center gap-1 disabled:opacity-50"
                           >
                             <CheckCircle className="w-4 h-4" />
                             批准
                           </button>
                         )}
-                        {request.status === 'approved' && (
+                        {request.status === 'approved' && canApprove && (
                           <button
                             onClick={() => handleIssue(request.id)}
-                            className="text-sm text-primary-600 hover:text-primary-700 flex items-center gap-1"
+                            disabled={loading}
+                            className="text-sm text-primary-600 hover:text-primary-700 flex items-center gap-1 disabled:opacity-50"
                           >
                             <Package className="w-4 h-4" />
                             发放
                           </button>
+                        )}
+                        {request.status === 'issued' && (
+                          <span className="text-sm text-gray-400 flex items-center gap-1">
+                            <CheckCircle className="w-4 h-4" />
+                            已完成
+                          </span>
+                        )}
+                        {request.status === 'canceled' && (
+                          <span className="text-sm text-red-400">已取消</span>
                         )}
                       </div>
                     </td>
@@ -212,6 +294,11 @@ export default function SparePartsList({ onNavigate }: SparePartsListProps) {
             </tbody>
           </table>
         </div>
+        {requests.length === 0 && (
+          <div className="text-center py-8 text-gray-500">
+            暂无领用申请记录
+          </div>
+        )}
       </div>
 
       {selectedPart && (
@@ -219,8 +306,8 @@ export default function SparePartsList({ onNavigate }: SparePartsListProps) {
           <div className="bg-white rounded-xl p-6 max-w-md w-full mx-4" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-6">
               <h3 className="font-bold text-xl text-gray-800">领用申请</h3>
-              <button onClick={() => setSelectedPart(null)} className="text-gray-400 hover:text-gray-600 text-2xl">
-                ✕
+              <button onClick={() => setSelectedPart(null)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-6 h-6" />
               </button>
             </div>
 
@@ -237,28 +324,39 @@ export default function SparePartsList({ onNavigate }: SparePartsListProps) {
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">当前库存</label>
-                <input
-                  type="text"
-                  value={`${selectedPart.quantity} ${selectedPart.unit}`}
-                  disabled
-                  className="form-input bg-gray-100 cursor-not-allowed"
-                />
+                <div className={`p-3 rounded-lg ${isLowStock(selectedPart) ? 'bg-red-50 text-red-700' : 'bg-gray-50 text-gray-800'}`}>
+                  <span className="font-medium">{selectedPart.quantity} {selectedPart.unit}</span>
+                  {isLowStock(selectedPart) && (
+                    <span className="text-xs ml-2">(库存不足，最低库存: {selectedPart.min_stock})</span>
+                  )}
+                </div>
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">申请数量</label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">申请数量 *</label>
                 <input
                   type="number"
                   min="1"
                   max={selectedPart.quantity}
                   value={requestQuantity}
-                  onChange={(e) => setRequestQuantity(Math.min(parseInt(e.target.value) || 1, selectedPart.quantity))}
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value) || 1;
+                    setRequestQuantity(Math.min(val, selectedPart.quantity));
+                    if (val > selectedPart.quantity) {
+                      setError(`申请数量不能超过库存 (${selectedPart.quantity})`);
+                    } else {
+                      setError('');
+                    }
+                  }}
                   className="form-input"
                 />
+                {requestQuantity > selectedPart.quantity && (
+                  <p className="text-xs text-red-500 mt-1">申请数量超过库存，无法提交</p>
+                )}
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">领用原因</label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">领用原因 *</label>
                 <textarea
                   rows={3}
                   value={requestReason}
@@ -276,9 +374,9 @@ export default function SparePartsList({ onNavigate }: SparePartsListProps) {
               <button 
                 className="flex-1 btn btn-primary" 
                 onClick={handleCreateRequest}
-                disabled={requestQuantity <= 0 || !requestReason}
+                disabled={loading || requestQuantity <= 0 || requestQuantity > selectedPart.quantity || !requestReason}
               >
-                提交申请
+                {loading ? '提交中...' : '提交申请'}
               </button>
             </div>
           </div>

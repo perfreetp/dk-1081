@@ -9,9 +9,9 @@ interface SparePartsStore {
   fetchRequests: () => Promise<void>;
   createSparePart: (data: Omit<SparePart, 'id' | 'created_at' | 'updated_at'>) => Promise<void>;
   updateSparePart: (id: string, data: Partial<SparePart>) => Promise<void>;
-  createRequest: (data: { spare_part_id: string; requester_id: string; quantity: number; reason: string }) => Promise<void>;
+  createRequest: (data: { spare_part_id: string; requester_id: string; quantity: number; reason: string }) => Promise<{ success: boolean; message: string }>;
   approveRequest: (id: string, approved: boolean) => Promise<void>;
-  issueRequest: (id: string) => Promise<void>;
+  issueRequest: (id: string) => Promise<{ success: boolean; message: string }>;
   setSelectedSparePart: (sparePart: SparePart | null) => void;
   getLowStockParts: () => SparePart[];
   getRequestsByStatus: (status: SparePartRequestStatus) => SparePartRequest[];
@@ -130,6 +130,13 @@ export const useSparePartsStore = create<SparePartsStore>((set, get) => ({
 
   createRequest: async (data) => {
     await new Promise(resolve => setTimeout(resolve, 200));
+    const sparePart = get().spareParts.find(sp => sp.id === data.spare_part_id);
+    if (!sparePart) {
+      return { success: false, message: '备件不存在' };
+    }
+    if (data.quantity > sparePart.quantity) {
+      return { success: false, message: `申请数量超过库存（当前库存: ${sparePart.quantity} ${sparePart.unit}）` };
+    }
     const newRequest: SparePartRequest = {
       ...data,
       id: `SPR${Date.now()}`,
@@ -139,6 +146,7 @@ export const useSparePartsStore = create<SparePartsStore>((set, get) => ({
       updated_at: new Date().toISOString().split('T')[0],
     };
     set(state => ({ requests: [...state.requests, newRequest] }));
+    return { success: true, message: '申请已提交' };
   },
 
   approveRequest: async (id, approved) => {
@@ -153,16 +161,25 @@ export const useSparePartsStore = create<SparePartsStore>((set, get) => ({
   issueRequest: async (id) => {
     await new Promise(resolve => setTimeout(resolve, 200));
     const request = get().requests.find(r => r.id === id);
-    if (request) {
-      set(state => ({
-        requests: state.requests.map(r =>
-          r.id === id ? { ...r, status: 'issued', updated_at: new Date().toISOString().split('T')[0] } : r
-        ),
-        spareParts: state.spareParts.map(sp =>
-          sp.id === request.spare_part_id ? { ...sp, quantity: sp.quantity - request.quantity, updated_at: new Date().toISOString().split('T')[0] } : sp
-        ),
-      }));
+    if (!request) {
+      return { success: false, message: '申请不存在' };
     }
+    const sparePart = get().spareParts.find(sp => sp.id === request.spare_part_id);
+    if (!sparePart) {
+      return { success: false, message: '备件不存在' };
+    }
+    if (request.quantity > sparePart.quantity) {
+      return { success: false, message: `库存不足，无法发放（当前库存: ${sparePart.quantity} ${sparePart.unit}，申请数量: ${request.quantity} ${sparePart.unit}）` };
+    }
+    set(state => ({
+      requests: state.requests.map(r =>
+        r.id === id ? { ...r, status: 'issued', updated_at: new Date().toISOString().split('T')[0] } : r
+      ),
+      spareParts: state.spareParts.map(sp =>
+        sp.id === request.spare_part_id ? { ...sp, quantity: sp.quantity - request.quantity, updated_at: new Date().toISOString().split('T')[0] } : sp
+      ),
+    }));
+    return { success: true, message: '发放成功' };
   },
 
   setSelectedSparePart: (sparePart) => {

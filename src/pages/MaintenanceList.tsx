@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Wrench, Search, Filter, Plus, Calendar, Clock, User, ChevronRight, CheckCircle, AlertCircle } from 'lucide-react';
+import { Wrench, Search, Filter, Plus, Calendar, Clock, User, ChevronRight, CheckCircle, AlertCircle, X, Save } from 'lucide-react';
 import Layout from '../components/layout/Layout';
 import { useMaintenanceStore } from '../stores/maintenance';
 import { useEquipmentStore } from '../stores/equipment';
+import { useAuthStore } from '../stores/auth';
 import { WorkOrder, WorkOrderStatus, WorkOrderPriority } from '../types';
 
 interface MaintenanceListProps {
@@ -40,12 +41,21 @@ const priorityLabels: Record<WorkOrderPriority, string> = {
 };
 
 export default function MaintenanceList({ onNavigate }: MaintenanceListProps) {
-  const { workOrders, fetchWorkOrders, changeWorkOrderStatus, assignWorkOrder } = useMaintenanceStore();
+  const { workOrders, fetchWorkOrders, changeWorkOrderStatus, assignWorkOrder, createWorkOrder } = useMaintenanceStore();
   const { equipments, fetchEquipments } = useEquipmentStore();
+  const { hasPermission, user } = useAuthStore();
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<WorkOrderStatus | 'all'>('all');
   const [selectedWorkOrder, setSelectedWorkOrder] = useState<WorkOrder | null>(null);
   const [showCalendar, setShowCalendar] = useState(false);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [createForm, setCreateForm] = useState({
+    equipment_id: '',
+    title: '',
+    description: '',
+    priority: 'medium',
+  });
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     fetchWorkOrders();
@@ -62,16 +72,72 @@ export default function MaintenanceList({ onNavigate }: MaintenanceListProps) {
   });
 
   const handleAccept = async (id: string) => {
-    await changeWorkOrderStatus(id, 'accepted');
+    setLoading(true);
+    try {
+      await changeWorkOrderStatus(id, 'accepted');
+      await fetchWorkOrders();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleStartProcess = async (id: string) => {
+    setLoading(true);
+    try {
+      await changeWorkOrderStatus(id, 'processing');
+      await fetchWorkOrders();
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleComplete = async (id: string) => {
-    await changeWorkOrderStatus(id, 'completed');
+    setLoading(true);
+    try {
+      await changeWorkOrderStatus(id, 'completed');
+      await fetchWorkOrders();
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleVerify = async (id: string) => {
-    await changeWorkOrderStatus(id, 'verified');
+    setLoading(true);
+    try {
+      await changeWorkOrderStatus(id, 'verified');
+      await fetchWorkOrders();
+      setSelectedWorkOrder(null);
+    } finally {
+      setLoading(false);
+    }
   };
+
+  const handleCreate = async () => {
+    if (!createForm.equipment_id || !createForm.title || !user) return;
+    setLoading(true);
+    try {
+      await createWorkOrder({
+        exception_id: '',
+        equipment_id: createForm.equipment_id,
+        title: createForm.title,
+        description: createForm.description,
+        assignee_id: '',
+        status: 'pending',
+        priority: createForm.priority as WorkOrderPriority,
+      });
+      await fetchWorkOrders();
+      setShowCreateModal(false);
+      setCreateForm({ equipment_id: '', title: '', description: '', priority: 'medium' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const canCreate = hasPermission('create_work_order');
+  const canAssign = hasPermission('assign_work_order');
+  const canAccept = hasPermission('accept_work_order');
+  const canProcess = hasPermission('process_work_order');
+  const canVerify = hasPermission('approve_exception');
 
   return (
     <Layout currentPage="maintenance" onNavigate={onNavigate} title="维修计划" subtitle="管理维修工单与保养计划">
@@ -110,10 +176,12 @@ export default function MaintenanceList({ onNavigate }: MaintenanceListProps) {
             </select>
           </div>
         </div>
-        <button className="btn btn-primary flex items-center gap-2">
-          <Plus className="w-5 h-5" />
-          新建工单
-        </button>
+        {canCreate && (
+          <button onClick={() => setShowCreateModal(true)} className="btn btn-primary flex items-center gap-2">
+            <Plus className="w-5 h-5" />
+            新建工单
+          </button>
+        )}
       </div>
 
       {showCalendar && (
@@ -130,13 +198,13 @@ export default function MaintenanceList({ onNavigate }: MaintenanceListProps) {
               return (
                 <div
                   key={i}
-                  className={`h-12 flex items-center justify-center text-sm rounded-lg ${
-                    hasMaintenance ? 'bg-primary-100 text-primary-800' : 'text-gray-600'
+                  className={`h-12 flex flex-col items-center justify-center text-sm rounded-lg relative ${
+                    hasMaintenance ? 'bg-primary-100 text-primary-800 font-medium' : 'text-gray-600'
                   }`}
                 >
                   {day}
                   {hasMaintenance && (
-                    <span className="absolute w-2 h-2 bg-primary-500 rounded-full -bottom-1"></span>
+                    <Wrench className="w-3 h-3 text-primary-600 mt-1" />
                   )}
                 </div>
               );
@@ -144,7 +212,7 @@ export default function MaintenanceList({ onNavigate }: MaintenanceListProps) {
           </div>
           <div className="mt-4 flex items-center gap-4 text-sm">
             <div className="flex items-center gap-2">
-              <span className="w-3 h-3 bg-primary-100 rounded-full"></span>
+              <Wrench className="w-4 h-4 text-primary-600" />
               <span className="text-gray-600">有保养任务</span>
             </div>
           </div>
@@ -180,7 +248,7 @@ export default function MaintenanceList({ onNavigate }: MaintenanceListProps) {
                 </div>
                 <div className="flex items-center gap-2">
                   <User className="w-4 h-4 text-gray-400" />
-                  <span>李明</span>
+                  <span>{workOrder.assignee_id ? '李明' : '未分配'}</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <Clock className="w-4 h-4 text-gray-400" />
@@ -195,32 +263,44 @@ export default function MaintenanceList({ onNavigate }: MaintenanceListProps) {
                 >
                   详情 <ChevronRight className="w-4 h-4" />
                 </button>
-                {workOrder.status === 'pending' && (
+                {workOrder.status === 'pending' && canAssign && (
                   <button className="px-4 py-2 bg-primary-100 text-primary-700 rounded-lg text-sm hover:bg-primary-200 transition-colors">
                     分配
                   </button>
                 )}
-                {workOrder.status === 'pending' && (
+                {workOrder.status === 'pending' && canAccept && !canAssign && (
                   <button
                     onClick={() => handleAccept(workOrder.id)}
-                    className="px-4 py-2 bg-green-100 text-green-700 rounded-lg text-sm hover:bg-green-200 transition-colors"
+                    disabled={loading}
+                    className="px-4 py-2 bg-green-100 text-green-700 rounded-lg text-sm hover:bg-green-200 transition-colors disabled:opacity-50"
                   >
                     接单
                   </button>
                 )}
-                {workOrder.status === 'processing' && (
+                {workOrder.status === 'accepted' && canProcess && (
+                  <button
+                    onClick={() => handleStartProcess(workOrder.id)}
+                    disabled={loading}
+                    className="px-4 py-2 bg-orange-100 text-orange-700 rounded-lg text-sm hover:bg-orange-200 transition-colors disabled:opacity-50"
+                  >
+                    开始处理
+                  </button>
+                )}
+                {workOrder.status === 'processing' && canProcess && (
                   <button
                     onClick={() => handleComplete(workOrder.id)}
-                    className="px-4 py-2 bg-green-100 text-green-700 rounded-lg text-sm hover:bg-green-200 transition-colors flex items-center gap-1"
+                    disabled={loading}
+                    className="px-4 py-2 bg-green-100 text-green-700 rounded-lg text-sm hover:bg-green-200 transition-colors flex items-center gap-1 disabled:opacity-50"
                   >
                     <CheckCircle className="w-4 h-4" />
                     完成
                   </button>
                 )}
-                {workOrder.status === 'completed' && (
+                {workOrder.status === 'completed' && canVerify && (
                   <button
                     onClick={() => handleVerify(workOrder.id)}
-                    className="px-4 py-2 bg-blue-100 text-blue-700 rounded-lg text-sm hover:bg-blue-200 transition-colors"
+                    disabled={loading}
+                    className="px-4 py-2 bg-primary-100 text-primary-700 rounded-lg text-sm hover:bg-primary-200 transition-colors disabled:opacity-50"
                   >
                     验收
                   </button>
@@ -230,6 +310,12 @@ export default function MaintenanceList({ onNavigate }: MaintenanceListProps) {
           );
         })}
       </div>
+
+      {filteredWorkOrders.length === 0 && (
+        <div className="text-center py-12 text-gray-500">
+          暂无维修工单
+        </div>
+      )}
 
       {selectedWorkOrder && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setSelectedWorkOrder(null)}>
@@ -251,8 +337,8 @@ export default function MaintenanceList({ onNavigate }: MaintenanceListProps) {
                   </div>
                 </div>
               </div>
-              <button onClick={() => setSelectedWorkOrder(null)} className="text-gray-400 hover:text-gray-600 text-2xl">
-                ✕
+              <button onClick={() => setSelectedWorkOrder(null)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-6 h-6" />
               </button>
             </div>
 
@@ -274,11 +360,11 @@ export default function MaintenanceList({ onNavigate }: MaintenanceListProps) {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">负责人</label>
-                  <p className="text-gray-800">李明</p>
+                  <p className="text-gray-800">{selectedWorkOrder.assignee_id ? '李明' : '未分配'}</p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">关联异常</label>
-                  <p className="text-gray-800">E001</p>
+                  <p className="text-gray-800">{selectedWorkOrder.exception_id || '无'}</p>
                 </div>
               </div>
 
@@ -295,6 +381,17 @@ export default function MaintenanceList({ onNavigate }: MaintenanceListProps) {
                     </div>
                   </div>
                   {selectedWorkOrder.status !== 'pending' && (
+                    <div className="flex items-start gap-3 p-3 bg-yellow-50 rounded-lg">
+                      <div className="w-6 h-6 bg-yellow-100 rounded-full flex items-center justify-center flex-shrink-0">
+                        <User className="w-4 h-4 text-yellow-600" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium text-yellow-800">维修员接单</p>
+                        <p className="text-xs text-yellow-600">维修员已接单开始处理</p>
+                      </div>
+                    </div>
+                  )}
+                  {selectedWorkOrder.status === 'completed' && (
                     <div className="flex items-start gap-3 p-3 bg-green-50 rounded-lg">
                       <div className="w-6 h-6 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0">
                         <CheckCircle className="w-4 h-4 text-green-600" />
@@ -302,6 +399,17 @@ export default function MaintenanceList({ onNavigate }: MaintenanceListProps) {
                       <div>
                         <p className="text-sm font-medium text-green-800">维修完成</p>
                         <p className="text-xs text-green-600">已完成维修工作，等待验收</p>
+                      </div>
+                    </div>
+                  )}
+                  {selectedWorkOrder.status === 'verified' && (
+                    <div className="flex items-start gap-3 p-3 bg-primary-50 rounded-lg">
+                      <div className="w-6 h-6 bg-primary-100 rounded-full flex items-center justify-center flex-shrink-0">
+                        <CheckCircle className="w-4 h-4 text-primary-600" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium text-primary-800">验收完成</p>
+                        <p className="text-xs text-primary-600">工单已完成验收</p>
                       </div>
                     </div>
                   )}
@@ -313,8 +421,94 @@ export default function MaintenanceList({ onNavigate }: MaintenanceListProps) {
               <button className="flex-1 btn btn-secondary" onClick={() => setSelectedWorkOrder(null)}>
                 关闭
               </button>
-              <button className="flex-1 btn btn-primary">
-                添加日志
+              {selectedWorkOrder.status === 'completed' && canVerify && (
+                <button
+                  onClick={() => handleVerify(selectedWorkOrder.id)}
+                  disabled={loading}
+                  className="flex-1 btn btn-primary flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  <CheckCircle className="w-4 h-4" />
+                  {loading ? '验收中...' : '验收确认'}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCreateModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowCreateModal(false)}>
+          <div className="bg-white rounded-xl p-6 max-w-md w-full mx-4" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="font-bold text-xl text-gray-800">新建维修工单</h3>
+              <button onClick={() => setShowCreateModal(false)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">选择设备 *</label>
+                <select
+                  value={createForm.equipment_id}
+                  onChange={(e) => setCreateForm({ ...createForm, equipment_id: e.target.value })}
+                  className="form-select"
+                >
+                  <option value="">请选择设备</option>
+                  {equipments.map(e => (
+                    <option key={e.id} value={e.id}>{e.name} ({e.code})</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">工单标题 *</label>
+                <input
+                  type="text"
+                  value={createForm.title}
+                  onChange={(e) => setCreateForm({ ...createForm, title: e.target.value })}
+                  placeholder="请输入工单标题"
+                  className="form-input"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">优先级</label>
+                <div className="flex gap-3">
+                  {(['low', 'medium', 'high', 'urgent'] as WorkOrderPriority[]).map(priority => (
+                    <button
+                      key={priority}
+                      onClick={() => setCreateForm({ ...createForm, priority })}
+                      className={`flex-1 p-3 rounded-lg border-2 transition-all ${
+                        createForm.priority === priority
+                          ? priorityColors[priority].replace('bg-', 'border-').replace('text-', 'bg-')
+                          : 'border-gray-200 text-gray-600'
+                      }`}
+                    >
+                      {priorityLabels[priority]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">工单描述</label>
+                <textarea
+                  rows={4}
+                  value={createForm.description}
+                  onChange={(e) => setCreateForm({ ...createForm, description: e.target.value })}
+                  placeholder="请详细描述维修内容..."
+                  className="form-textarea"
+                />
+              </div>
+            </div>
+            <div className="flex gap-3 mt-6">
+              <button className="flex-1 btn btn-secondary" onClick={() => setShowCreateModal(false)}>
+                取消
+              </button>
+              <button
+                className="flex-1 btn btn-primary flex items-center justify-center gap-2"
+                onClick={handleCreate}
+                disabled={loading || !createForm.equipment_id || !createForm.title}
+              >
+                <Save className="w-4 h-4" />
+                {loading ? '创建中...' : '创建工单'}
               </button>
             </div>
           </div>
